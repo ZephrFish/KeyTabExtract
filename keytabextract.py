@@ -6,7 +6,7 @@ Shows all keys sorted by timestamp (newest first) for each service principal.
 Features:
 - Multiple keytab version support (0501, 0502)
 - Hash verification
-- colourised output
+- Colourised output
 - Batch processing of multiple keytab files
 - Multiple hash format options (plain, hashcat, john)
 - Comprehensive logging
@@ -21,14 +21,14 @@ import re
 import sys
 from typing import Dict, Any, Optional, List, Tuple, Set
 
-# Try to import colourama for coloured output
+# Try to import colorama for coloured output
 try:
-    import colourama
-    from colourama import Fore, Style
-    colourama.init()
-    HAS_colourS = True
+    import colorama
+    from colorama import Fore, Style
+    colorama.init()
+    HAS_COLOURS = True
 except ImportError:
-    HAS_colourS = False
+    HAS_COLOURS = False
     # Create dummy colour constants
     class DummyFore:
         def __getattr__(self, name):
@@ -70,7 +70,7 @@ class KeyTabExtractor:
         self.hex_encoded = ""
         self.all_data = {}
         self.verbose = verbose
-        self.use_colour = HAS_colourS and not no_colour
+        self.use_colour = HAS_COLOURS and not no_colour
         self.hash_format = hash_format
         self.version = None
     
