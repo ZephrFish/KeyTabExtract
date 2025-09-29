@@ -33,7 +33,6 @@ try:
     HAS_COLOURS = True
 except ImportError:
     HAS_COLOURS = False
-    # Create dummy colour constants
     class DummyFore:
         def __getattr__(self, name: str) -> str:
             return ""
@@ -43,12 +42,10 @@ except ImportError:
     Fore = DummyFore()
     Style = DummyStyle()
 
-# Configure logger
 logger = logging.getLogger("keytabextract")
 
-# Constants
-MAX_KEYTAB_SIZE: int = 100 * 1024 * 1024  # 100MB limit
-HEADER_SIZE: int = 12  # Skip version and size fields
+MAX_KEYTAB_SIZE: int = 100 * 1024 * 1024
+HEADER_SIZE: int = 12
 VERSION_FIELD_SIZE: int = 4
 COMPONENT_COUNT_SIZE: int = 4
 REALM_LENGTH_SIZE: int = 4
@@ -130,9 +127,13 @@ class ServicePrincipal:
     keys: List[KeyEntry] = field(default_factory=list)
 
     def add_key(self, key: KeyEntry) -> None:
-        """Add a key entry to this service principal."""
+        """Add a key entry to this service principal.
+
+        Args:
+            key: KeyEntry to add
+        """
         self.keys.append(key)
-        self.keys.sort()  # Keep sorted by timestamp
+        self.keys.sort()
 
 
 @dataclass
@@ -143,7 +144,13 @@ class KeytabData:
     principals: Dict[str, ServicePrincipal] = field(default_factory=dict)
 
     def add_entry(self, realm: str, principal_name: str, key: KeyEntry) -> None:
-        """Add a key entry to the appropriate service principal."""
+        """Add a key entry to the appropriate service principal.
+
+        Args:
+            realm: Kerberos realm
+            principal_name: Service principal name
+            key: KeyEntry to add
+        """
         full_name = f"{principal_name}@{realm}"
         if full_name not in self.principals:
             self.principals[full_name] = ServicePrincipal(
@@ -158,8 +165,7 @@ class KeyTabParser(ABC):
 
     @abstractmethod
     def extract_entry(self, hex_data: str, pointer: int) -> Tuple[Optional[Tuple[str, str, KeyEntry]], int]:
-        """
-        Extract a single entry from the keytab.
+        """Extract a single entry from the keytab.
 
         Returns:
             Tuple containing (realm, principal, key_entry) and new pointer position
@@ -171,24 +177,11 @@ class KeyTabParserV0501(KeyTabParser):
     """Parser for keytab version 0501."""
 
     def extract_entry(self, hex_data: str, pointer: int) -> Tuple[Optional[Tuple[str, str, KeyEntry]], int]:
-        """Extract entry using v0501 format."""
-        # For now, v0501 uses the same format as v0502
-        # This would be implemented differently for actual v0501 format
-        parser = KeyTabParserV0502()
-        return parser.extract_entry(hex_data, pointer)
-
-
-class KeyTabParserV0502(KeyTabParser):
-    """Parser for keytab version 0502."""
-
-    def extract_entry(self, hex_data: str, pointer: int) -> Tuple[Optional[Tuple[str, str, KeyEntry]], int]:
-        """Extract entry using v0502 format."""
+        """Extract entry using v0501 format (without entry size fields)."""
         try:
-            # Number of components
             num_components = int(hex_data[pointer:pointer+COMPONENT_COUNT_SIZE], 16)
             pointer += COMPONENT_COUNT_SIZE
 
-            # Realm length and value
             realm_len = int(hex_data[pointer:pointer+REALM_LENGTH_SIZE], 16)
             pointer += REALM_LENGTH_SIZE
 
@@ -196,7 +189,6 @@ class KeyTabParserV0502(KeyTabParser):
             realm = bytes.fromhex(hex_data[pointer:realm_end]).decode('utf-8')
             pointer = realm_end
 
-            # Extract components
             components = []
             for _ in range(num_components):
                 comp_len = int(hex_data[pointer:pointer+COMPONENT_LENGTH_SIZE], 16)
@@ -207,24 +199,18 @@ class KeyTabParserV0502(KeyTabParser):
                 pointer = comp_end
 
             service_principal = "/".join(components)
-
-            # Skip name type
             pointer += NAMETYPE_SIZE
 
-            # Timestamp
             timestamp = int(hex_data[pointer:pointer+TIMESTAMP_SIZE], 16)
             timestamp_str = datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
             pointer += TIMESTAMP_SIZE
 
-            # Key version number
-            kvno = int(hex_data[pointer:pointer+KVNO_SIZE], 16)
-            pointer += KVNO_SIZE
+            kvno = int(hex_data[pointer:pointer+2], 16)
+            pointer += 2
 
-            # Key type
             keytype_hex = hex_data[pointer:pointer+KEYTYPE_SIZE]
             pointer += KEYTYPE_SIZE
 
-            # Key length and value
             key_len = int(hex_data[pointer:pointer+KEYLEN_SIZE], 16)
             pointer += KEYLEN_SIZE
 
@@ -232,7 +218,6 @@ class KeyTabParserV0502(KeyTabParser):
             key_val = hex_data[pointer:key_val_end]
             pointer = key_val_end
 
-            # Create key entry
             key = KeyEntry(
                 timestamp=timestamp,
                 timestamp_str=timestamp_str,
@@ -241,7 +226,66 @@ class KeyTabParserV0502(KeyTabParser):
                 hash_value=key_val
             )
 
-            # Skip padding and find next entry
+            return (realm, service_principal, key), pointer
+
+        except Exception as e:
+            logger.debug(f"Error parsing v0501 entry at position {pointer}: {str(e)}")
+            return None, pointer + 8
+
+
+class KeyTabParserV0502(KeyTabParser):
+    """Parser for keytab version 0502."""
+
+    def extract_entry(self, hex_data: str, pointer: int) -> Tuple[Optional[Tuple[str, str, KeyEntry]], int]:
+        """Extract entry using v0502 format."""
+        try:
+            num_components = int(hex_data[pointer:pointer+COMPONENT_COUNT_SIZE], 16)
+            pointer += COMPONENT_COUNT_SIZE
+
+            realm_len = int(hex_data[pointer:pointer+REALM_LENGTH_SIZE], 16)
+            pointer += REALM_LENGTH_SIZE
+
+            realm_end = pointer + (realm_len * 2)
+            realm = bytes.fromhex(hex_data[pointer:realm_end]).decode('utf-8')
+            pointer = realm_end
+
+            components = []
+            for _ in range(num_components):
+                comp_len = int(hex_data[pointer:pointer+COMPONENT_LENGTH_SIZE], 16)
+                pointer += COMPONENT_LENGTH_SIZE
+                comp_end = pointer + (comp_len * 2)
+                component = bytes.fromhex(hex_data[pointer:comp_end]).decode('utf-8')
+                components.append(component)
+                pointer = comp_end
+
+            service_principal = "/".join(components)
+            pointer += NAMETYPE_SIZE
+
+            timestamp = int(hex_data[pointer:pointer+TIMESTAMP_SIZE], 16)
+            timestamp_str = datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+            pointer += TIMESTAMP_SIZE
+
+            kvno = int(hex_data[pointer:pointer+KVNO_SIZE], 16)
+            pointer += KVNO_SIZE
+
+            keytype_hex = hex_data[pointer:pointer+KEYTYPE_SIZE]
+            pointer += KEYTYPE_SIZE
+
+            key_len = int(hex_data[pointer:pointer+KEYLEN_SIZE], 16)
+            pointer += KEYLEN_SIZE
+
+            key_val_end = pointer + (key_len * 2)
+            key_val = hex_data[pointer:key_val_end]
+            pointer = key_val_end
+
+            key = KeyEntry(
+                timestamp=timestamp,
+                timestamp_str=timestamp_str,
+                kvno=kvno,
+                encryption_type=keytype_hex,
+                hash_value=key_val
+            )
+
             pointer = self._skip_padding(hex_data, pointer)
 
             return (realm, service_principal, key), pointer
@@ -251,22 +295,26 @@ class KeyTabParserV0502(KeyTabParser):
             return None, pointer + 8
 
     def _skip_padding(self, hex_data: str, pointer: int) -> int:
-        """Skip padding bytes and alignment."""
+        """Skip padding bytes and alignment.
+
+        Args:
+            hex_data: Hex-encoded keytab data
+            pointer: Current position in hex data
+
+        Returns:
+            int: New pointer position
+        """
         try:
-            # Try to skip next size field
             if pointer + 8 <= len(hex_data):
                 pointer += 8
 
-            # Skip alignment bytes
             while pointer < len(hex_data) and hex_data[pointer:pointer+2] == "00":
                 pointer += 2
 
-            # Handle special marker
             if pointer < len(hex_data) and hex_data[pointer:pointer+4] == "ffff":
                 pointer += 8
 
         except ValueError:
-            # Skip any padding bytes
             while pointer < len(hex_data) and hex_data[pointer:pointer+2] == "00":
                 pointer += 2
 
@@ -287,7 +335,18 @@ class HashFormatter:
         realm: str,
         service_principal: str
     ) -> str:
-        """Format a hash according to the specified output format."""
+        """Format a hash according to the specified output format.
+
+        Args:
+            hash_format: Output format type
+            enc_type: Encryption type ID
+            hash_value: Hash value to format
+            realm: Kerberos realm
+            service_principal: Service principal name
+
+        Returns:
+            str: Formatted hash string
+        """
         if hash_format == HashFormat.PLAIN:
             return hash_value
         elif hash_format == HashFormat.HASHCAT:
@@ -298,7 +357,17 @@ class HashFormatter:
 
     @staticmethod
     def _format_hashcat(enc_type: str, hash_value: str, realm: str, principal: str) -> str:
-        """Format for hashcat."""
+        """Format for hashcat.
+
+        Args:
+            enc_type: Encryption type ID
+            hash_value: Hash value
+            realm: Kerberos realm
+            principal: Service principal name
+
+        Returns:
+            str: Hashcat-formatted hash
+        """
         if enc_type == EncryptionType.RC4_HMAC.value:
             return f"{hash_value}:{principal}"
         elif enc_type in (EncryptionType.AES256_CTS_HMAC_SHA1.value, EncryptionType.AES128_CTS_HMAC_SHA1.value):
@@ -307,7 +376,17 @@ class HashFormatter:
 
     @staticmethod
     def _format_john(enc_type: str, hash_value: str, realm: str, principal: str) -> str:
-        """Format for John the Ripper."""
+        """Format for John the Ripper.
+
+        Args:
+            enc_type: Encryption type ID
+            hash_value: Hash value
+            realm: Kerberos realm
+            principal: Service principal name
+
+        Returns:
+            str: John-formatted hash
+        """
         if enc_type == EncryptionType.RC4_HMAC.value:
             return f"{principal}:{hash_value}"
         elif enc_type in (EncryptionType.AES256_CTS_HMAC_SHA1.value, EncryptionType.AES128_CTS_HMAC_SHA1.value):
@@ -326,8 +405,7 @@ class KeyTabExtractor:
         hash_format: HashFormat = HashFormat.PLAIN,
         dry_run: bool = False
     ):
-        """
-        Initialise the KeyTabExtractor.
+        """Initialise the KeyTabExtractor.
 
         Args:
             keytab_path: Path to the keytab file
@@ -346,35 +424,58 @@ class KeyTabExtractor:
         self.parser: Optional[KeyTabParser] = None
 
     def colour_text(self, text: str, colour: Any) -> str:
-        """Apply colour to text if colours are enabled."""
+        """Apply colour to text if colours are enabled.
+
+        Args:
+            text: Text to colorize
+            colour: Colorama colour object
+
+        Returns:
+            str: Colored or plain text
+        """
         if self.use_colour:
             return f"{colour}{text}{Style.RESET_ALL}"
         return text
 
     def log_info(self, message: str) -> None:
-        """Log an info message."""
+        """Log an info message.
+
+        Args:
+            message: Message to log
+        """
         logger.info(message)
         print(self.colour_text(f"[+] {message}", Fore.GREEN))
 
     def log_warning(self, message: str) -> None:
-        """Log a warning message."""
+        """Log a warning message.
+
+        Args:
+            message: Message to log
+        """
         logger.warning(message)
         print(self.colour_text(f"[!] {message}", Fore.YELLOW))
 
     def log_error(self, message: str) -> None:
-        """Log an error message."""
+        """Log an error message.
+
+        Args:
+            message: Message to log
+        """
         logger.error(message)
         print(self.colour_text(f"[!] {message}", Fore.RED))
 
     def log_debug(self, message: str) -> None:
-        """Log a debug message if verbose is enabled."""
+        """Log a debug message if verbose is enabled.
+
+        Args:
+            message: Message to log
+        """
         logger.debug(message)
         if self.verbose:
             print(self.colour_text(f"[*] {message}", Fore.CYAN))
 
     def load_keytab(self) -> bool:
-        """
-        Load and validate the keytab file.
+        """Load and validate the keytab file.
 
         Returns:
             bool: True if the file was successfully loaded, False otherwise
@@ -382,7 +483,6 @@ class KeyTabExtractor:
         try:
             file_path = Path(self.keytab_path)
 
-            # Check file existence and permissions
             if not file_path.exists():
                 self.log_error(f"File '{self.keytab_path}' not found.")
                 return False
@@ -391,11 +491,9 @@ class KeyTabExtractor:
                 self.log_error(f"'{self.keytab_path}' is not a regular file.")
                 return False
 
-            # Read file
             with open(file_path, 'rb') as f:
                 data = f.read()
 
-            # Check file size
             if len(data) > MAX_KEYTAB_SIZE:
                 self.log_error(f"Keytab file exceeds maximum size of {MAX_KEYTAB_SIZE} bytes.")
                 return False
@@ -406,7 +504,6 @@ class KeyTabExtractor:
 
             self.hex_encoded = binascii.hexlify(data).decode('utf-8')
 
-            # Validate keytab version
             version = self.hex_encoded[:VERSION_FIELD_SIZE]
             if version not in SUPPORTED_VERSIONS:
                 self.log_error(
@@ -415,13 +512,11 @@ class KeyTabExtractor:
                 )
                 return False
 
-            # Initialise data container and parser
             self.keytab_data = KeytabData(
                 version=version,
                 file_path=self.keytab_path
             )
 
-            # Select appropriate parser
             if version == "0501":
                 self.parser = KeyTabParserV0501()
             else:
@@ -438,8 +533,7 @@ class KeyTabExtractor:
             return False
 
     def analyse_keytab(self) -> Dict[str, Any]:
-        """
-        Analyse the keytab file structure without extracting hashes.
+        """Analyse the keytab file structure without extracting hashes.
 
         Returns:
             Dictionary with analysis results
@@ -452,13 +546,11 @@ class KeyTabExtractor:
             "potential_principals": set()
         }
 
-        # Detect encryption types
         for enc_id, enc_info in ENCRYPTION_TYPES.items():
             enc_pattern = f"{enc_id}{enc_info.pattern_suffix}"
             if enc_pattern in self.hex_encoded:
                 analysis["encryption_types"].append(enc_info.name)
 
-        # Count potential entries (rough estimate)
         analysis["entry_count"] = sum(
             self.hex_encoded.count(enc_type)
             for enc_type in ENCRYPTION_TYPES.keys()
@@ -467,8 +559,7 @@ class KeyTabExtractor:
         return analysis
 
     def detect_encryption_types(self) -> Dict[str, bool]:
-        """
-        Detect supported encryption types in the keytab.
+        """Detect supported encryption types in the keytab.
 
         Returns:
             Dict mapping encryption type IDs to boolean indicating presence
@@ -487,8 +578,7 @@ class KeyTabExtractor:
         return found_types
 
     def verify_hash(self, enc_type: str, hash_value: str) -> bool:
-        """
-        Verify that a hash meets the expected format requirements.
+        """Verify that a hash meets the expected format requirements.
 
         Args:
             enc_type: Encryption type ID
@@ -497,12 +587,10 @@ class KeyTabExtractor:
         Returns:
             bool: True if the hash is valid, False otherwise
         """
-        # Check if encryption type is known
         if enc_type not in ENCRYPTION_TYPES:
             self.log_debug(f"Unknown encryption type: {enc_type}")
             return False
 
-        # Check hash length
         expected_length = ENCRYPTION_TYPES[enc_type].hash_length
         if len(hash_value) != expected_length:
             self.log_debug(
@@ -511,7 +599,6 @@ class KeyTabExtractor:
             )
             return False
 
-        # Check for valid hex characters
         try:
             bytes.fromhex(hash_value)
         except ValueError:
@@ -521,8 +608,7 @@ class KeyTabExtractor:
         return True
 
     def extract_entries(self) -> bool:
-        """
-        Extract all entries from the keytab file.
+        """Extract all entries from the keytab file.
 
         Returns:
             bool: True if any entries were extracted, False otherwise
@@ -551,7 +637,6 @@ class KeyTabExtractor:
                 if result:
                     realm, principal, key_entry = result
 
-                    # Verify hash before adding
                     if self.verify_hash(key_entry.encryption_type, key_entry.hash_value):
                         self.keytab_data.add_entry(realm, principal, key_entry)
                         entry_count += 1
@@ -561,7 +646,6 @@ class KeyTabExtractor:
                         )
 
                 if new_pointer <= pointer:
-                    # Avoid infinite loop
                     self.log_warning(f"Parser stuck at position {pointer}. Stopping.")
                     break
 
@@ -575,8 +659,7 @@ class KeyTabExtractor:
             return False
 
     def format_output(self, output_file: Optional[str] = None) -> bool:
-        """
-        Format and display the extracted data.
+        """Format and display the extracted data.
 
         Args:
             output_file: Optional path to save results
@@ -585,7 +668,6 @@ class KeyTabExtractor:
             bool: True if successful, False otherwise
         """
         if self.dry_run:
-            # Dry-run output is handled in extract_entries
             return True
 
         if not self.keytab_data or not self.keytab_data.principals:
@@ -603,13 +685,11 @@ class KeyTabExtractor:
         add_line(f"Version: {self.keytab_data.version}")
         add_line("")
 
-        # Sort principals for consistent output
         for principal_name in sorted(self.keytab_data.principals.keys()):
             principal = self.keytab_data.principals[principal_name]
             add_line(self.colour_text(f"Realm: {principal.realm}", Fore.MAGENTA))
             add_line(self.colour_text(f"  Service Principal: {principal.name}", Fore.BLUE))
 
-            # Keys are already sorted by timestamp (newest first)
             for key in principal.keys:
                 add_line(
                     self.colour_text(
@@ -618,11 +698,9 @@ class KeyTabExtractor:
                     )
                 )
 
-                # Get encryption info
                 enc_info = ENCRYPTION_TYPES.get(key.encryption_type)
                 display_name = enc_info.display if enc_info else f"Type-{key.encryption_type}"
 
-                # Format hash
                 formatted_hash = HashFormatter.format(
                     self.hash_format,
                     key.encryption_type,
@@ -633,7 +711,6 @@ class KeyTabExtractor:
 
                 add_line(f"      {display_name}: {formatted_hash}")
 
-        # Save to file if requested
         if output_file:
             try:
                 output_path = Path(output_file)
@@ -641,7 +718,6 @@ class KeyTabExtractor:
 
                 with open(output_path, 'w') as f:
                     for line in output_lines:
-                        # Strip ANSI colour codes for file output
                         clean_line = re.sub(r'\x1b\[[0-9;]+m', '', line)
                         f.write(clean_line + "\n")
 
@@ -655,8 +731,7 @@ class KeyTabExtractor:
         return True
 
     def run(self, output_file: Optional[str] = None) -> int:
-        """
-        Main execution flow.
+        """Main execution flow.
 
         Args:
             output_file: Optional path to save results
@@ -683,8 +758,7 @@ class KeyTabExtractor:
 
 
 def process_directory(directory: str, args: argparse.Namespace) -> int:
-    """
-    Process all keytab files in a directory.
+    """Process all keytab files in a directory.
 
     Args:
         directory: Directory path to scan for keytab files
@@ -712,12 +786,10 @@ def process_directory(directory: str, args: argparse.Namespace) -> int:
     logger.info(f"Found {len(keytab_files)} keytab files in {directory}")
     print(f"[+] Found {len(keytab_files)} keytab files in {directory}")
 
-    # Process each keytab file
     for filepath in keytab_files:
         print(f"\n[*] Processing {filepath}...")
         logger.info(f"Processing {filepath}")
 
-        # Create output filename if needed
         output_file: Optional[str] = None
         if args.output:
             output_dir = Path(args.output)
@@ -744,8 +816,7 @@ def process_directory(directory: str, args: argparse.Namespace) -> int:
 
 
 def setup_logging(log_file: Optional[str], log_level: str) -> None:
-    """
-    Configure logging.
+    """Configure logging.
 
     Args:
         log_file: Path to log file or None for console logging
@@ -761,7 +832,6 @@ def setup_logging(log_file: Optional[str], log_level: str) -> None:
             datefmt='%Y-%m-%d %H:%M:%S'
         )
     else:
-        # Configure a null handler if no log file is specified
         logging.basicConfig(
             level=numeric_level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -771,7 +841,11 @@ def setup_logging(log_file: Optional[str], log_level: str) -> None:
 
 
 def parse_arguments() -> argparse.Namespace:
-    """Parse command line arguments."""
+    """Parse command line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed command line arguments
+    """
     parser = argparse.ArgumentParser(
         description="KeyTabExtract: Extract hashes from Kerberos keytab files with timestamps",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -831,7 +905,6 @@ Examples:
 
     args = parser.parse_args()
 
-    # Validate arguments
     if not args.keytab and not args.directory:
         parser.error("Either a keytab file or directory must be specified")
 
@@ -839,15 +912,17 @@ Examples:
 
 
 def main() -> int:
-    """Main entry point for the script."""
+    """Main entry point for the script.
+
+    Returns:
+        int: Exit code (0 for success, non-zero for errors)
+    """
     args = parse_arguments()
 
-    # Setup logging
     setup_logging(args.log, args.log_level)
     logger.info(f"KeyTabExtract started with arguments: {vars(args)}")
 
     try:
-        # Process directory or single file
         if args.directory:
             return process_directory(args.directory, args)
         else:
