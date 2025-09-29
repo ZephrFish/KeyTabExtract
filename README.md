@@ -13,6 +13,7 @@ KeyTabExtract is a utility to help extract valuable information from Kerberos .k
 - Batch processing of multiple keytab files
 - Multiple hash format options (plain, hashcat, john)
 - Comprehensive logging
+- Dry-run mode to analyse keytab structure without extracting hashes
 
 ## Requirements
 
@@ -85,6 +86,12 @@ optional arguments:
 
 ```bash
 ./keytabextract.py -v --log keytab.log --log-level DEBUG service.keytab
+```
+
+### Analyse keytab structure without extracting hashes (dry-run)
+
+```bash
+./keytabextract.py --dry-run service.keytab
 ```
 
 ## Output Format
